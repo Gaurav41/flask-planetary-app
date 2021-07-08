@@ -3,10 +3,12 @@ from flask.json import jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_marshmallow import Marshmallow
 from flask_jwt_extended import JWTManager,jwt_required,create_access_token,get_jwt_identity
-from flask_mail import Mail,Message  
+from flask_mail import Mail,Message
+from flask_bcrypt import Bcrypt  
 import os  
 
 app = Flask(__name__)
+bcrypt = Bcrypt()
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///planets.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False 
 # app.config['FLASK_SECRET KEY'] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9."
@@ -18,8 +20,8 @@ app.config["JWT_SECRET_KEY"] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eI6IkpvaG4g
 
 app.config['MAIL_SERVER']='smtp.mailtrap.io'
 app.config['MAIL_PORT'] = 2525
-app.config['MAIL_USERNAME'] = 'f3f70804fe1f15'
-app.config['MAIL_PASSWORD'] = '843cd5003257fc'
+app.config['MAIL_USERNAME'] = ''
+app.config['MAIL_PASSWORD'] = ''
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USE_SSL'] = False
 
@@ -62,10 +64,11 @@ def db_seed():
     db.session.add(Venus)
     db.session.add(Earth)
 
+    hashed_password = bcrypt.generate_password_hash("123").decode("UTF-8")
     test_user=User(first_name="Gaurav",
                     last_name="Pingale",
                     email="gp@gmail.com",
-                    password="123")
+                    password=hashed_password)
     db.session.add(test_user)
     db.session.commit()
     print("database seeded")
@@ -96,9 +99,16 @@ def url_var(name: str, age: int):
 @jwt_required()
 def planets():
     logged_user = get_jwt_identity()
-    print(logged_user)
+    print(logged_user.id)
     planets_list = Planet.query.all()
     result = planets_schema.dump(planets_list)
+    return jsonify(result)
+
+@app.route("/users",methods=["GET"])
+# @jwt_required()
+def users():
+    user_list = User.query.all()
+    result = users_schema.dump(user_list)
     return jsonify(result)
 
 @app.route("/planet_details/<int:planet_id>",methods=['GET'])
@@ -166,12 +176,13 @@ def register():
     email = request.form['email']
     test = User.query.filter_by(email=email).first()
     if test:
-        return jsonify(message ="This emial address already exists."),409
+        return jsonify(message ="This email address already exists."),409
     else:
         first_name = request.form["first_name"]
         last_name = request.form["last_name"]
         password = request.form["password"]
-        user = User(first_name=first_name,last_name=last_name,email=email,password=password)
+        hashed_password = bcrypt.generate_password_hash(password).decode("UTF-8")
+        user = User(first_name=first_name,last_name=last_name,email=email,password=hashed_password)
         db.session.add(user)
         db.session.commit()
         return jsonify(message="user created successfully"),201
@@ -187,12 +198,30 @@ def login():
         email = request.form["email"]
         password = request.form["password"]
     
-    test = User.query.filter_by(email=email, password=password).first()
-    if test:
-        access_token = create_access_token(identity=email)
+    user = User.query.filter_by(email=email).first()
+    auth = bcrypt.check_password_hash(user.password,password)
+    if auth:
+        access_token = create_access_token(identity=user)
         return jsonify(message="Login succeeded!",access_token=access_token )
     else:
         return jsonify(message="Login failed!" ),401
+
+# Register a callback function that takes whatever object is passed in as the
+# identity when creating JWTs and converts it to a JSON serializable format.
+@jwt.user_identity_loader
+def user_identity_lookup(user):
+    return user.id
+
+
+# Register a callback function that loades a user from your database whenever
+# a protected route is accessed. This should return any python object on a
+# successful lookup, or None if the lookup failed for any reason (for example
+# if the user has been deleted from the database).
+@jwt.user_lookup_loader
+def user_lookup_callback( jwt_data):
+    identity = jwt_data["sub"]
+    return User.query.filter_by(id=identity).one_or_none()
+
 
 
 @app.route("/retrive_password/<string:email>",methods=['GET'])
